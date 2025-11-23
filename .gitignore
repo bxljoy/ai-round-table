@@ -1,0 +1,76 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+
+# Dependency directories
+node_modules/
+
+# Environment variables
+.env
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS specific
+.DS_Store
+
+# Task Master - Personal files (don't commit)
+.taskmaster/tasks/tasks.json
+.taskmaster/tasks/*.md
+.taskmaster/config.json
+.taskmaster/state.json
+.taskmaster/reports/
+
+# Task Master - Project files (DO commit)
+# .taskmaster/CLAUDE.md
+# .taskmaster/templates/
+# .taskmaster/docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv
+venv/
+ENV/
+env/
+
+# Python testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# UV
+.uv/ 
