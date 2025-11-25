@@ -31,6 +31,24 @@ Orchestrate multiple AI CLIs (Claude Code, Codex, Gemini Code Assist) for collab
 - Graceful shutdown with SIGINT/SIGTERM handling
 - User-friendly error messages
 
+## ⚠️ Current Limitations
+
+**Important**: This project is a **proof-of-concept** demonstrating multi-AI CLI orchestration architecture. Currently, it successfully:
+- ✅ Manages AI CLI process lifecycle (start/stop/restart)
+- ✅ Handles configuration and session management
+- ✅ Generates project-specific context files
+- ✅ Implements orchestration patterns (sequential/parallel/review modes)
+
+**However**, actual question/answer interaction is **not yet functional** because:
+- These AI CLIs (Claude Code, Codex, Gemini) are **interactive chat applications**, not traditional command-line tools
+- They are designed for human interaction via terminal UIs, not programmatic control
+- They use complex input/output patterns incompatible with simple pexpect automation
+
+**Future Direction**: The project would need to:
+1. Use the AI CLIs' APIs directly instead of terminal automation, OR
+2. Implement more sophisticated terminal interaction handling, OR
+3. Wait for CLI vendors to provide non-interactive/headless modes
+
 ## Installation
 
 ### Prerequisites

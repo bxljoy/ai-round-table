@@ -178,14 +178,19 @@ class AICliManager(ABC):
                 self.state = ProcessState.STARTING
                 logger.info(f"Starting {self.cli_name}...")
 
-                # Spawn process
+                # Spawn process with proper terminal environment
                 command = self.get_spawn_command()
+                import os
+                env = os.environ.copy()
+                env['TERM'] = 'xterm-256color'
+
                 self.process = pexpect.spawn(
                     command[0],
                     command[1:],
                     cwd=str(self.project_path),
                     encoding="utf-8",
                     timeout=self.timeout,
+                    env=env,
                 )
 
                 # Wait for initial prompt
@@ -522,11 +527,78 @@ class ClaudeCodeManager(AICliManager):
 
     def get_spawn_command(self) -> list[str]:
         """Get Claude Code spawn command."""
-        return ["claude", "--headless"]
+        # Use --dangerously-skip-permissions to skip confirmation prompts
+        return ["claude", "--dangerously-skip-permissions"]
 
     def get_startup_timeout(self) -> int:
         """Claude Code startup timeout."""
         return 30  # Claude Code can take a while to start
+
+    def start(self) -> bool:
+        """Start Claude Code with special handling for bypass permissions UI."""
+        with self._lock:
+            if self.state == ProcessState.RUNNING:
+                logger.warning(f"{self.cli_name} already running")
+                return True
+
+            try:
+                self.state = ProcessState.STARTING
+                logger.info(f"Starting {self.cli_name}...")
+
+                # Spawn process with proper terminal environment
+                command = self.get_spawn_command()
+                import os
+                import time
+                env = os.environ.copy()
+                env['TERM'] = 'xterm-256color'
+
+                self.process = pexpect.spawn(
+                    command[0],
+                    command[1:],
+                    cwd=str(self.project_path),
+                    encoding="utf-8",
+                    timeout=self.timeout,
+                    env=env,
+                )
+
+                # Wait for bypass permissions UI and send Enter to confirm
+                startup_timeout = self.get_startup_timeout()
+                index = self.process.expect([
+                    r'bypass permissions',  # Bypass permissions UI
+                    self.prompt_pattern,     # Normal prompt
+                ], timeout=startup_timeout)
+
+                if index == 0:  # Got bypass permissions UI
+                    logger.info("Confirming bypass permissions selection")
+                    self.process.sendline('')  # Send Enter to confirm
+                    # Claude Code doesn't show a traditional prompt after bypass
+                    # Just wait a moment for it to be ready
+                    time.sleep(2)
+
+                # Send initialization command if configured
+                if self.init_command:
+                    self.send_command(self.init_command)
+
+                # Start I/O monitoring thread
+                self._start_io_thread()
+
+                self.state = ProcessState.RUNNING
+                logger.info(f"{self.cli_name} started successfully")
+                return True
+
+            except (EOF, TIMEOUT) as e:
+                self.state = ProcessState.ERROR
+                error_msg = f"Failed to start {self.cli_name}: {e}"
+                logger.error(error_msg)
+                self._cleanup()
+                raise AICliProcessError(error_msg)
+
+            except Exception as e:
+                self.state = ProcessState.ERROR
+                error_msg = f"Unexpected error starting {self.cli_name}: {e}"
+                logger.error(error_msg)
+                self._cleanup()
+                raise AICliProcessError(error_msg)
 
 
 class CodexManager(AICliManager):
@@ -534,7 +606,8 @@ class CodexManager(AICliManager):
 
     def get_spawn_command(self) -> list[str]:
         """Get Codex spawn command."""
-        return ["codex"]
+        # Use --dangerously-bypass-approvals-and-sandbox to skip confirmation prompts and cursor checks
+        return ["codex", "--dangerously-bypass-approvals-and-sandbox"]
 
     def get_startup_timeout(self) -> int:
         """Codex startup timeout."""
@@ -550,4 +623,125 @@ class GeminiManager(AICliManager):
 
     def get_startup_timeout(self) -> int:
         """Gemini startup timeout."""
-        return 20
+        return 30
+
+    def send_command(
+        self, command: str, timeout: Optional[int] = None
+    ) -> Optional[str]:
+        """
+        Send command to Gemini and wait for answer with ✦ marker.
+
+        Gemini shows progress UI before the answer, so we need to wait for
+        the ✦ marker that indicates the actual answer.
+
+        Args:
+            command: Command to send
+            timeout: Timeout in seconds (uses default if None)
+
+        Returns:
+            Command output (answer text after ✦ marker)
+
+        Raises:
+            AICliTimeoutError: If command times out
+            AICliProcessError: If process is not running
+        """
+        if self.state != ProcessState.RUNNING:
+            raise AICliProcessError(f"{self.cli_name} is not running")
+
+        if timeout is None:
+            timeout = self.timeout
+
+        try:
+            with self._lock:
+                # Send command
+                self.process.sendline(command)
+                logger.debug(f"Sent to {self.cli_name}: {command}")
+
+                # Wait for answer marker ✦ - Gemini always shows this before answers
+                # This skips all the progress UI (input box, context loading, etc.)
+                self.process.expect(r'✦', timeout=timeout)
+
+                # Read until we see the next > prompt (answer is complete)
+                self.process.expect(r'\n>', timeout=30)
+
+                # The answer is in process.before (between ✦ and >)
+                output = self.process.before
+                if output:
+                    output = output.strip()
+                    logger.debug(f"Received from {self.cli_name}: {output[:100]}...")
+
+                return output
+
+        except TIMEOUT:
+            raise AICliTimeoutError(
+                f"Command timed out after {timeout}s: {command[:50]}"
+            )
+
+        except EOF:
+            self.state = ProcessState.ERROR
+            raise AICliProcessError(f"{self.cli_name} process terminated unexpectedly")
+
+    def start(self) -> bool:
+        """Start Gemini with special handling for sandbox selection UI."""
+        with self._lock:
+            if self.state == ProcessState.RUNNING:
+                logger.warning(f"{self.cli_name} already running")
+                return True
+
+            try:
+                self.state = ProcessState.STARTING
+                logger.info(f"Starting {self.cli_name}...")
+
+                # Spawn process with proper terminal environment
+                command = self.get_spawn_command()
+                import os
+                import time
+                env = os.environ.copy()
+                env['TERM'] = 'xterm-256color'
+
+                self.process = pexpect.spawn(
+                    command[0],
+                    command[1:],
+                    cwd=str(self.project_path),
+                    encoding="utf-8",
+                    timeout=self.timeout,
+                    env=env,
+                )
+
+                # Wait for sandbox selection UI and send Enter to confirm 'auto'
+                startup_timeout = self.get_startup_timeout()
+                index = self.process.expect([
+                    r'no sandbox.*auto',  # Sandbox selection UI
+                    self.prompt_pattern,  # Normal prompt
+                ], timeout=startup_timeout)
+
+                if index == 0:  # Got sandbox selection UI
+                    logger.info("Auto-selecting default sandbox option")
+                    self.process.sendline('')  # Send Enter to confirm default (auto)
+                    # Wait a moment for Gemini to initialize
+                    time.sleep(2)
+
+                # Send initialization command if configured
+                if self.init_command:
+                    self.send_command(self.init_command)
+
+                # Start I/O monitoring thread
+                self._start_io_thread()
+
+                self.state = ProcessState.RUNNING
+                logger.info(f"{self.cli_name} started successfully")
+                return True
+
+            except (EOF, TIMEOUT) as e:
+                self.state = ProcessState.ERROR
+                error_msg = f"Failed to start {self.cli_name}: {e}"
+                logger.error(error_msg)
+                self._cleanup()
+                raise AICliProcessError(error_msg)
+
+            except Exception as e:
+                self.state = ProcessState.ERROR
+                error_msg = f"Unexpected error starting {self.cli_name}: {e}"
+                logger.error(error_msg)
+                self._cleanup()
+                raise AICliProcessError(error_msg)

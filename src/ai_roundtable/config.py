@@ -17,19 +17,22 @@ DEFAULT_CONFIG = {
     "default_mode": "sequential",
     "cli_settings": {
         "claude_code": {
-            "timeout": 60,
-            "init_command": "/init",
-            "prompt_pattern": "Claude>",
+            "enabled": True,
+            "timeout": 300,  # Increased to 5 minutes for AI thinking time
+            "init_command": "",
+            "prompt_pattern": r">",  # Simple > prompt that works
         },
         "codex": {
-            "timeout": 60,
-            "init_command": "/init",
-            "prompt_pattern": "Codex>",
+            "enabled": True,  # Can start successfully, but Q&A not working (see README)
+            "timeout": 120,
+            "init_command": "",
+            "prompt_pattern": r">",  # Simple pattern works for startup
         },
         "gemini": {
-            "timeout": 60,
-            "init_command": "/init",
-            "prompt_pattern": "Gemini>",
+            "enabled": True,
+            "timeout": 300,  # Increased to 5 minutes for AI thinking time
+            "init_command": "",
+            "prompt_pattern": r">",  # Simple > prompt
         },
     },
     "context": {
@@ -203,7 +206,7 @@ class ConfigManager:
                     f"cli_settings.{cli_name} must be a dictionary"
                 )
 
-            required_cli_keys = ["timeout", "init_command", "prompt_pattern"]
+            required_cli_keys = ["enabled", "timeout", "init_command", "prompt_pattern"]
             for cli_key in required_cli_keys:
                 if cli_key not in cli_config:
                     raise ConfigValidationError(

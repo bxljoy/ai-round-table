@@ -188,6 +188,12 @@ class MonoRepoOrchestrator:
                         # Get CLI-specific configuration
                         cli_config = self.config.get_cli_settings(cli_name)
 
+                        # Check if CLI is enabled
+                        if not cli_config.get("enabled", True):
+                            logger.info(f"Skipping {cli_name} (disabled in config)")
+                            results[cli_name] = False
+                            continue
+
                         # Create and start manager
                         logger.info(f"Starting {cli_name}...")
                         manager = manager_class(
@@ -230,26 +236,21 @@ class MonoRepoOrchestrator:
                     self.session_state.state = self.state
                     self._save_session_state()
 
-                    logger.info(
-                        f"Orchestrator started with {len(successful)}/{len(self.CLI_MANAGERS)} CLIs"
-                    )
+                    if failed:
+                        logger.warning(
+                            f"Orchestrator started with {len(successful)}/{len(self.CLI_MANAGERS)} CLIs "
+                            f"({len(failed)} failed: {', '.join(failed.keys())})"
+                        )
+                    else:
+                        logger.info(
+                            f"Orchestrator started with {len(successful)}/{len(self.CLI_MANAGERS)} CLIs"
+                        )
                 else:
                     self.state = OrchestratorState.ERROR
                     logger.error("No CLIs started successfully")
-
-                # Raise partial failure exception if some failed
-                if failed and successful:
-                    raise PartialStartupError(
-                        f"{len(failed)} CLIs failed to start", successful, failed
-                    )
-                elif failed and not successful:
-                    raise OrchestratorError("All CLIs failed to start")
+                    raise OrchestratorError("All enabled CLIs failed to start")
 
                 return results
-
-            except PartialStartupError:
-                # Re-raise partial failure
-                raise
 
             except Exception as e:
                 self.state = OrchestratorState.ERROR
@@ -337,7 +338,7 @@ class MonoRepoOrchestrator:
 
             try:
                 logger.info(f"Sending to {cli_name}...")
-                response = manager.send_command(context, timeout=120)
+                response = manager.send_command(context, timeout=300)  # 5 min for AI thinking
 
                 discussion_response = DiscussionResponse(
                     cli_name=cli_name, response=response, timestamp=datetime.now()
@@ -366,7 +367,7 @@ class MonoRepoOrchestrator:
         return responses
 
     def parallel_discussion(
-        self, question: str, timeout: int = 120
+        self, question: str, timeout: int = 300
     ) -> List[DiscussionResponse]:
         """
         Run parallel discussion mode.
@@ -494,7 +495,7 @@ class MonoRepoOrchestrator:
             try:
                 proposer_mgr = self.ai_managers[proposer]
                 logger.info(f"Getting proposal from {proposer}...")
-                proposal_response = proposer_mgr.send_command(current_task, timeout=120)
+                proposal_response = proposer_mgr.send_command(current_task, timeout=300)
 
                 proposal = DiscussionResponse(
                     cli_name=proposer,
@@ -523,7 +524,7 @@ class MonoRepoOrchestrator:
                 reviewer_mgr = self.ai_managers[reviewer]
                 review_prompt = f"Review this proposal:\n\n{proposal_response}"
                 logger.info(f"Getting review from {reviewer}...")
-                review_response = reviewer_mgr.send_command(review_prompt, timeout=120)
+                review_response = reviewer_mgr.send_command(review_prompt, timeout=300)
 
                 review = DiscussionResponse(
                     cli_name=reviewer,

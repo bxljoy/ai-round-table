@@ -73,4 +73,8 @@ env/
 htmlcov/
 
 # UV
-.uv/ 
+.uv/
+
+claude-code/
+codex/
+gemini-cli/
