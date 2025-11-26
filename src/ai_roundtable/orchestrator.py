@@ -167,7 +167,7 @@ class MonoRepoOrchestrator:
 
             try:
                 self.state = OrchestratorState.STARTING
-                logger.info(f"Starting AI Roundtable orchestrator for {self.project_path}")
+                logger.info(f"Initializing AI Roundtable for {self.project_path}")
 
                 # Generate context files if needed
                 if reinit or not self._context_files_exist():
@@ -178,7 +178,7 @@ class MonoRepoOrchestrator:
                 logger.info("Analyzing project structure...")
                 self.context_builder.analyze_project()
 
-                # Start each CLI manager
+                # Initialize each CLI manager (verifies CLI availability)
                 results = {}
                 successful = []
                 failed = {}
@@ -194,8 +194,8 @@ class MonoRepoOrchestrator:
                             results[cli_name] = False
                             continue
 
-                        # Create and start manager
-                        logger.info(f"Starting {cli_name}...")
+                        # Create and verify manager (non-interactive mode)
+                        logger.info(f"Checking {cli_name}...")
                         manager = manager_class(
                             cli_name=cli_name,
                             config=cli_config,
@@ -208,10 +208,10 @@ class MonoRepoOrchestrator:
                         if success:
                             self.ai_managers[cli_name] = manager
                             successful.append(cli_name)
-                            logger.info(f"✓ {cli_name} started successfully")
+                            logger.info(f"✓ {cli_name} available")
                         else:
-                            failed[cli_name] = "Failed to start"
-                            logger.error(f"✗ {cli_name} failed to start")
+                            failed[cli_name] = "Not available"
+                            logger.error(f"✗ {cli_name} not available")
 
                     except KeyError:
                         # CLI not configured
@@ -220,12 +220,12 @@ class MonoRepoOrchestrator:
                         failed[cli_name] = "Not configured"
 
                     except (AICliProcessError, AICliTimeoutError) as e:
-                        logger.error(f"Error starting {cli_name}: {e}")
+                        logger.error(f"Error checking {cli_name}: {e}")
                         results[cli_name] = False
                         failed[cli_name] = str(e)
 
                     except Exception as e:
-                        logger.error(f"Unexpected error starting {cli_name}: {e}")
+                        logger.error(f"Unexpected error checking {cli_name}: {e}")
                         results[cli_name] = False
                         failed[cli_name] = f"Unexpected error: {e}"
 
@@ -238,17 +238,17 @@ class MonoRepoOrchestrator:
 
                     if failed:
                         logger.warning(
-                            f"Orchestrator started with {len(successful)}/{len(self.CLI_MANAGERS)} CLIs "
-                            f"({len(failed)} failed: {', '.join(failed.keys())})"
+                            f"Orchestrator ready with {len(successful)}/{len(self.CLI_MANAGERS)} CLIs "
+                            f"({len(failed)} unavailable: {', '.join(failed.keys())})"
                         )
                     else:
                         logger.info(
-                            f"Orchestrator started with {len(successful)}/{len(self.CLI_MANAGERS)} CLIs"
+                            f"Orchestrator ready with {len(successful)}/{len(self.CLI_MANAGERS)} CLIs"
                         )
                 else:
                     self.state = OrchestratorState.ERROR
-                    logger.error("No CLIs started successfully")
-                    raise OrchestratorError("All enabled CLIs failed to start")
+                    logger.error("No CLIs available")
+                    raise OrchestratorError("All enabled CLIs are unavailable")
 
                 return results
 
@@ -338,7 +338,7 @@ class MonoRepoOrchestrator:
 
             try:
                 logger.info(f"Sending to {cli_name}...")
-                response = manager.send_command(context, timeout=300)  # 5 min for AI thinking
+                response = manager.send_command(context)  # Uses configured timeout
 
                 discussion_response = DiscussionResponse(
                     cli_name=cli_name, response=response, timestamp=datetime.now()
@@ -568,19 +568,17 @@ class MonoRepoOrchestrator:
         """
         with self._lock:
             if self.state == OrchestratorState.STOPPED:
-                logger.info("Orchestrator already stopped")
+                logger.debug("Orchestrator already stopped")
                 return
 
-            logger.info(f"Stopping orchestrator ({len(self.ai_managers)} CLIs)...")
+            logger.debug(f"Closing {len(self.ai_managers)} CLI sessions...")
 
-            # Stop each CLI manager
+            # Close each CLI session
             for cli_name, manager in list(self.ai_managers.items()):
                 try:
-                    logger.info(f"Stopping {cli_name}...")
                     manager.stop(force=force)
-                    logger.info(f"✓ {cli_name} stopped")
                 except Exception as e:
-                    logger.error(f"Error stopping {cli_name}: {e}")
+                    logger.error(f"Error closing {cli_name}: {e}")
 
             # Clear managers
             self.ai_managers.clear()
@@ -591,7 +589,7 @@ class MonoRepoOrchestrator:
             self.session_state.state = self.state
             self._save_session_state()
 
-            logger.info("Orchestrator stopped")
+            logger.debug("Session ended")
 
     def pause(self) -> None:
         """Pause the orchestrator without stopping CLIs."""

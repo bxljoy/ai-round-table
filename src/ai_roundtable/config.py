@@ -18,21 +18,22 @@ DEFAULT_CONFIG = {
     "cli_settings": {
         "claude_code": {
             "enabled": True,
-            "timeout": 300,  # Increased to 5 minutes for AI thinking time
+            "timeout": 600,  # 10 minutes for complex tasks like codebase analysis
             "init_command": "",
-            "prompt_pattern": r">",  # Simple > prompt that works
+            "prompt_pattern": r">",
         },
         "codex": {
-            "enabled": True,  # Can start successfully, but Q&A not working (see README)
-            "timeout": 120,
+            "enabled": True,
+            "timeout": 600,  # 10 minutes for complex tasks like codebase analysis
             "init_command": "",
-            "prompt_pattern": r">",  # Simple pattern works for startup
+            "prompt_pattern": r">",
         },
         "gemini": {
             "enabled": True,
-            "timeout": 300,  # Increased to 5 minutes for AI thinking time
+            "timeout": 600,  # 10 minutes for complex tasks like codebase analysis
             "init_command": "",
-            "prompt_pattern": r">",  # Simple > prompt
+            "prompt_pattern": r">",
+            "model": "gemini-2.5-pro",
         },
     },
     "context": {

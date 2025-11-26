@@ -41,17 +41,16 @@ def _setup_signal_handlers(orchestrator: MonoRepoOrchestrator) -> None:
     def signal_handler(signum, frame):
         """Handle shutdown signals gracefully."""
         sig_name = signal.Signals(signum).name
-        logger.info(f"Received {sig_name}, shutting down gracefully...")
-        console.print(f"\n[yellow]⚠️  Received {sig_name}, shutting down...[/]")
+        logger.debug(f"Received {sig_name}")
+        console.print(f"\n[yellow]Exiting...[/]")
 
         try:
             if _global_orchestrator:
                 _global_orchestrator.stop_all_clis()
-                logger.info("All CLIs stopped successfully")
-                console.print("[green]✓[/] All CLIs stopped successfully")
+                console.print("[green]✓ Session ended[/]")
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
-            console.print(f"[red]✗[/] Error during shutdown: {e}")
+            console.print(f"[red]✗ Error: {e}[/]")
         finally:
             sys.exit(0)
 
@@ -81,15 +80,15 @@ def main(log_level: str):
 @click.option("--reinit", is_flag=True, help="Force re-initialization of the session")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
 def start(project: Path, reinit: bool, verbose: bool):
-    """Start AI Roundtable orchestrator session."""
+    """Start AI Roundtable interactive session."""
     # Configure logging level
     if verbose:
         LoggingConfig.set_level("DEBUG")
         logger.debug("Verbose logging enabled")
 
-    console.print("[bold green]🎭 Starting AI Roundtable Orchestrator[/]")
+    console.print("[bold green]🎭 AI Roundtable Interactive Mode[/]")
     console.print(f"[dim]Project: {project.absolute()}[/]")
-    logger.info(f"Starting orchestrator for project: {project.absolute()}")
+    logger.info(f"Starting interactive session for project: {project.absolute()}")
 
     if reinit:
         console.print("[yellow]⚠️  Re-initialization requested[/]")
@@ -114,37 +113,37 @@ def start(project: Path, reinit: bool, verbose: bool):
         _setup_signal_handlers(orchestrator)
         logger.debug("Signal handlers configured")
 
-        # Start all CLIs
-        console.print("\n[cyan]Starting AI CLIs...[/]")
-        logger.info("Starting AI CLI processes")
+        # Verify CLI availability (non-interactive mode - no long-running processes)
+        console.print("\n[cyan]Checking AI CLI availability...[/]")
+        logger.info("Verifying AI CLI availability")
 
         try:
             results = orchestrator.start_all_clis(reinit=reinit)
 
-            # Display startup results
+            # Display availability results
             success_count = sum(1 for v in results.values() if v)
             console.print(
-                f"[green]✓ {success_count}/{len(results)} CLIs started successfully[/]"
+                f"[green]✓ {success_count}/{len(results)} CLIs available[/]"
             )
-            logger.info(f"Started {success_count}/{len(results)} CLIs successfully")
+            logger.info(f"Verified {success_count}/{len(results)} CLIs available")
 
         except PartialStartupError as e:
             console.print(
-                f"[yellow]⚠️  Partial startup: {len(e.successful)} of {len(e.successful) + len(e.failed)} CLIs started[/]"
+                f"[yellow]⚠️  Partial availability: {len(e.successful)} of {len(e.successful) + len(e.failed)} CLIs[/]"
             )
-            console.print("[green]Started:[/] " + ", ".join(e.successful))
-            console.print("[red]Failed:[/]")
+            console.print("[green]Available:[/] " + ", ".join(e.successful))
+            console.print("[red]Not available:[/]")
             for cli, error in e.failed.items():
                 console.print(f"  - {cli}: {error}")
-                logger.error(f"Failed to start {cli}: {error}")
+                logger.error(f"CLI not available {cli}: {error}")
             console.print(
                 "\n[yellow]Continuing with available CLIs. Some commands may not work.[/]"
             )
-            logger.warning("Continuing with partial startup")
+            logger.warning("Continuing with partial availability")
 
         except OrchestratorError as e:
-            console.print(f"[bold red]❌ Failed to start orchestrator: {e}[/]")
-            logger.error(f"Orchestrator startup failed: {e}", exc_info=True)
+            console.print(f"[bold red]❌ Failed to initialize: {e}[/]")
+            logger.error(f"Initialization failed: {e}", exc_info=True)
             raise click.Abort()
 
         # Enter interactive mode
@@ -185,6 +184,10 @@ def _interactive_loop(orchestrator: MonoRepoOrchestrator):
     console.print(f"\n[dim]Session ID: {orchestrator.session_id}[/]")
     console.print(f"[dim]Active CLIs: {', '.join(orchestrator.get_active_clis())}[/]\n")
 
+    # Conversation history for cross-CLI context sharing
+    # Each entry: {"role": "user"|"claude"|"codex"|"gemini", "content": "..."}
+    conversation_history = []
+
     # Main loop
     while True:
         try:
@@ -194,7 +197,7 @@ def _interactive_loop(orchestrator: MonoRepoOrchestrator):
                 continue
 
             # Parse and execute command
-            _execute_command(orchestrator, user_input)
+            _execute_command(orchestrator, user_input, conversation_history)
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Use 'exit' to quit[/]")
@@ -208,7 +211,7 @@ def _interactive_loop(orchestrator: MonoRepoOrchestrator):
             logger.exception("Error in interactive loop")
 
     # Cleanup
-    console.print("\n[yellow]Shutting down...[/]")
+    console.print("\n[yellow]Exiting...[/]")
     orchestrator.stop_all_clis()
     console.print("[green]✓ Session ended[/]")
 
@@ -221,12 +224,14 @@ def _show_commands_help():
     table.add_column("Command", style="cyan")
     table.add_column("Description", style="dim")
 
-    table.add_row("@all <question>", "Ask all AIs in parallel")
     table.add_row("@seq <question>", "Ask AIs sequentially (chained context)")
-    table.add_row("@review <task>", "Proposal/review workflow")
     table.add_row("@claude <message>", "Direct message to Claude Code")
     table.add_row("@codex <message>", "Direct message to Codex")
     table.add_row("@gemini <message>", "Direct message to Gemini")
+    table.add_row("", "")
+    table.add_row("[dim]Direct commands share conversation context across CLIs[/]", "")
+    table.add_row("", "")
+    table.add_row("clear", "Clear conversation history")
     table.add_row("status", "Show session status")
     table.add_row("help", "Show this help message")
     table.add_row("exit", "Exit interactive mode")
@@ -234,13 +239,14 @@ def _show_commands_help():
     console.print(table)
 
 
-def _execute_command(orchestrator: MonoRepoOrchestrator, user_input: str):
+def _execute_command(orchestrator: MonoRepoOrchestrator, user_input: str, conversation_history: list):
     """
     Parse and execute user command.
 
     Args:
         orchestrator: MonoRepoOrchestrator instance
         user_input: User input string
+        conversation_history: List of conversation entries for cross-CLI context
     """
     # Exit command
     if user_input.lower() in ["exit", "quit", "q"]:
@@ -254,16 +260,10 @@ def _execute_command(orchestrator: MonoRepoOrchestrator, user_input: str):
     elif user_input.lower() == "status":
         _show_status(orchestrator)
 
-    # @all - parallel discussion
-    elif user_input.startswith("@all "):
-        question = user_input[5:].strip()
-        if not question:
-            console.print("[red]Error: Please provide a question[/]")
-            return
-
-        console.print(f"[dim]Asking all AIs in parallel...[/]\n")
-        responses = orchestrator.parallel_discussion(question, timeout=120)
-        _display_responses(responses)
+    # Clear conversation history
+    elif user_input.lower() == "clear":
+        conversation_history.clear()
+        console.print("[green]✓ Conversation history cleared[/]")
 
     # @seq - sequential discussion
     elif user_input.startswith("@seq "):
@@ -272,59 +272,30 @@ def _execute_command(orchestrator: MonoRepoOrchestrator, user_input: str):
             console.print("[red]Error: Please provide a question[/]")
             return
 
+        # Add user question to history
+        conversation_history.append({"role": "user", "content": question})
+
         console.print(f"[dim]Starting sequential discussion...[/]\n")
         responses = orchestrator.sequential_discussion(question)
         _display_responses(responses)
 
-    # @review - review mode
-    elif user_input.startswith("@review "):
-        task = user_input[8:].strip()
-        if not task:
-            console.print("[red]Error: Please provide a task description[/]")
-            return
-
-        # Ask for proposer and reviewer
-        console.print(
-            "[dim]Proposer (default: claude_code):[/] ", end="", markup=True
-        )
-        proposer = input().strip() or "claude_code"
-
-        console.print("[dim]Reviewer (default: codex):[/] ", end="", markup=True)
-        reviewer = input().strip() or "codex"
-
-        console.print(
-            "[dim]Iterations (default: 1):[/] ", end="", markup=True
-        )
-        iterations_str = input().strip() or "1"
-        try:
-            iterations = int(iterations_str)
-        except ValueError:
-            console.print("[red]Invalid number, using 1 iteration[/]")
-            iterations = 1
-
-        console.print(
-            f"\n[dim]Starting review: {proposer} → {reviewer} ({iterations} iteration(s))...[/]\n"
-        )
-        result = orchestrator.review_mode(task, proposer, reviewer, iterations)
-
-        # Display proposals and reviews
-        for i, (proposal, review) in enumerate(
-            zip(result["proposals"], result["reviews"]), 1
-        ):
-            console.print(f"\n[bold cyan]═══ Iteration {i} ═══[/]\n")
-            _display_responses([proposal])
-            console.print()
-            _display_responses([review])
+        # Add all AI responses to history
+        for response in responses:
+            if response.response and not response.error:
+                conversation_history.append({
+                    "role": response.cli_name,
+                    "content": response.response
+                })
 
     # Direct AI commands
     elif user_input.startswith("@claude "):
-        _send_direct_message(orchestrator, "claude_code", user_input[8:].strip())
+        _send_direct_message(orchestrator, "claude_code", user_input[8:].strip(), conversation_history)
 
     elif user_input.startswith("@codex "):
-        _send_direct_message(orchestrator, "codex", user_input[7:].strip())
+        _send_direct_message(orchestrator, "codex", user_input[7:].strip(), conversation_history)
 
     elif user_input.startswith("@gemini "):
-        _send_direct_message(orchestrator, "gemini", user_input[8:].strip())
+        _send_direct_message(orchestrator, "gemini", user_input[8:].strip(), conversation_history)
 
     # Unknown command
     else:
@@ -333,16 +304,67 @@ def _execute_command(orchestrator: MonoRepoOrchestrator, user_input: str):
         )
 
 
+def _estimate_tokens(text: str) -> int:
+    """Estimate token count (~4 characters per token)."""
+    return len(text) // 4
+
+
+def _get_history_tokens(conversation_history: list) -> int:
+    """Calculate estimated tokens in conversation history."""
+    total_chars = sum(len(entry.get("content", "")) for entry in conversation_history)
+    return total_chars // 4
+
+
+def _summarize_history(orchestrator: MonoRepoOrchestrator, conversation_history: list) -> Optional[str]:
+    """
+    Ask Claude to summarize the conversation history.
+
+    Returns:
+        Summary string, or None if summarization failed
+    """
+    manager = orchestrator.ai_managers.get("claude_code")
+    if not manager or not manager.is_alive():
+        return None
+
+    # Build history text for summarization
+    history_text = []
+    for entry in conversation_history:
+        role = entry["role"]
+        content = entry["content"]
+        if role == "user":
+            history_text.append(f"[User]: {content}")
+        else:
+            history_text.append(f"[{role}]: {content}")
+
+    summary_prompt = f"""Please provide a concise summary of this conversation, preserving:
+- Key decisions and conclusions
+- Important technical details
+- Action items or next steps
+
+Conversation:
+{chr(10).join(history_text)}
+
+Provide only the summary, no preamble."""
+
+    try:
+        summary = manager.send_command(summary_prompt)
+        return summary
+    except Exception as e:
+        logger.error(f"Failed to summarize history: {e}")
+        return None
+
+
 def _send_direct_message(
-    orchestrator: MonoRepoOrchestrator, cli_name: str, message: str
+    orchestrator: MonoRepoOrchestrator, cli_name: str, message: str, conversation_history: list
 ):
     """
-    Send direct message to a specific AI CLI.
+    Send direct message to a specific AI CLI with conversation context.
 
     Args:
         orchestrator: MonoRepoOrchestrator instance
         cli_name: Name of CLI (claude_code, codex, gemini)
         message: Message to send
+        conversation_history: List of conversation entries for cross-CLI context
     """
     if not message:
         console.print("[red]Error: Please provide a message[/]")
@@ -357,16 +379,103 @@ def _send_direct_message(
         console.print(f"[red]Error: {cli_name} is not running[/]")
         return
 
+    # Get token limit from config (default 80000)
+    context_settings = orchestrator.config.get_context_settings()
+    token_limit = context_settings.get("compression_threshold", 80000)
+
+    # Check if history needs summarization
+    history_tokens = _get_history_tokens(conversation_history)
+    history_entries = len(conversation_history)
+
+    # Show current history stats
+    token_percentage = (history_tokens / token_limit) * 100 if token_limit > 0 else 0
+    if token_percentage > 90:
+        token_color = "red"
+    elif token_percentage > 70:
+        token_color = "yellow"
+    else:
+        token_color = "dim"
+    console.print(f"[{token_color}]📊 History: {history_entries} entries, ~{history_tokens:,} tokens ({token_percentage:.1f}% of {token_limit:,} limit)[/]")
+
+    if history_tokens > token_limit:
+        console.print(f"\n[yellow]{'='*50}[/]")
+        console.print(f"[yellow]⚠️  AUTO-COMPACTING TRIGGERED[/]")
+        console.print(f"[yellow]{'='*50}[/]")
+        console.print(f"[dim]History tokens ({history_tokens:,}) exceeded limit ({token_limit:,})[/]")
+        console.print(f"[dim]Asking Claude to summarize {history_entries} conversation entries...[/]\n")
+
+        summary = _summarize_history(orchestrator, conversation_history)
+        if summary:
+            summary_tokens = _estimate_tokens(summary)
+            # Replace history with summary
+            conversation_history.clear()
+            conversation_history.append({"role": "summary", "content": summary})
+            console.print(f"[green]✓ History compacted successfully![/]")
+            console.print(f"[green]  Before: {history_tokens:,} tokens ({history_entries} entries)[/]")
+            console.print(f"[green]  After:  {summary_tokens:,} tokens (1 summary entry)[/]")
+            console.print(f"[green]  Saved:  {history_tokens - summary_tokens:,} tokens ({((history_tokens - summary_tokens) / history_tokens * 100):.1f}% reduction)[/]")
+        else:
+            console.print("[yellow]⚠️  Summarization failed, falling back to truncation[/]")
+            # Fallback: keep last 10 entries
+            recent = conversation_history[-10:]
+            old_tokens = history_tokens
+            conversation_history.clear()
+            conversation_history.extend(recent)
+            new_tokens = _get_history_tokens(conversation_history)
+            console.print(f"[yellow]  Kept last 10 entries: {old_tokens:,} → {new_tokens:,} tokens[/]")
+
+        console.print(f"[yellow]{'='*50}[/]\n")
+
     try:
+        # Build context from conversation history
+        # For Claude Code: exclude its own messages (it has --continue)
+        # For Codex/Gemini: include full history
+        if cli_name == "claude_code":
+            filtered_history = [h for h in conversation_history if h["role"] not in ["claude_code"]]
+        else:
+            filtered_history = conversation_history
+
+        context_parts = []
+        if filtered_history:
+            context_parts.append("=== Previous conversation context ===")
+            for entry in filtered_history:
+                role = entry["role"]
+                content = entry["content"]
+                if role == "user":
+                    context_parts.append(f"[User]: {content}")
+                elif role == "summary":
+                    context_parts.append(f"[Summary of earlier conversation]: {content}")
+                else:
+                    context_parts.append(f"[{role}]: {content}")
+            context_parts.append("=== End of context ===\n")
+            context_parts.append(f"[User]: {message}")
+            full_message = "\n".join(context_parts)
+        else:
+            full_message = message
+
+        # Add user message to history
+        conversation_history.append({"role": "user", "content": message})
+
         console.print(f"[dim]Sending to {cli_name}...[/]\n")
-        response = manager.send_command(message, timeout=120)
+        response = manager.send_command(full_message)  # Uses configured timeout
+
+        # Add AI response to history
+        if response:
+            conversation_history.append({"role": cli_name, "content": response})
 
         # Display response
+        color_map = {
+            "claude_code": "cyan",
+            "codex": "green",
+            "gemini": "magenta",
+        }
+        color = color_map.get(cli_name, "white")
+
         console.print(
             Panel(
                 response or "[dim]No response[/]",
-                title=f"[bold cyan]{cli_name}[/]",
-                border_style="cyan",
+                title=f"[bold {color}]{cli_name}[/]",
+                border_style=color,
             )
         )
 
@@ -655,20 +764,14 @@ def status(show_all: bool):
 @main.command()
 @click.argument("question")
 @click.option(
-    "--mode",
-    type=click.Choice(["all", "seq", "review"], case_sensitive=False),
-    default="all",
-    help="Discussion mode: all (parallel), seq (sequential), review (review mode)",
-)
-@click.option(
     "--project",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     default=".",
     help="Project directory path",
 )
-def ask(question: str, mode: str, project: Path):
-    """Quick question mode - ask all AIs a question without entering interactive mode."""
-    console.print(f"[bold magenta]💬 Asking question in {mode} mode[/]")
+def ask(question: str, project: Path):
+    """Quick question mode - ask AIs a question sequentially without entering interactive mode."""
+    console.print("[bold magenta]💬 Asking question (sequential mode)[/]")
     console.print(f"[dim]Question: {question}[/]")
     console.print(f"[dim]Project: {project.absolute()}[/]\n")
 
@@ -677,21 +780,12 @@ def ask(question: str, mode: str, project: Path):
         config = ConfigManager()
         orchestrator = MonoRepoOrchestrator(project_path=project.absolute(), config=config)
 
-        # Start CLIs
-        console.print("[dim]Starting AI CLIs...[/]")
+        # Verify CLI availability
+        console.print("[dim]Checking AI CLI availability...[/]")
         orchestrator.start_all_clis()
 
-        # Execute based on mode
-        if mode == "all":
-            responses = orchestrator.parallel_discussion(question)
-        elif mode == "seq":
-            responses = orchestrator.sequential_discussion(question)
-        elif mode == "review":
-            result = orchestrator.review_mode(question, "claude_code", "codex", 1)
-            responses = result["proposals"] + result["reviews"]
-        else:
-            console.print(f"[red]Unknown mode: {mode}[/]")
-            raise click.Abort()
+        # Execute sequential discussion
+        responses = orchestrator.sequential_discussion(question)
 
         # Display responses
         console.print()

@@ -523,19 +523,34 @@ class AICliManager(ABC):
 
 
 class ClaudeCodeManager(AICliManager):
-    """Manager for Claude Code CLI."""
+    """
+    Manager for Claude Code CLI using print mode (-p).
+
+    Uses `claude -p "prompt"` with `--continue` for multi-turn conversations.
+    This is much more reliable than trying to automate the interactive TUI.
+    """
+
+    def __init__(self, cli_name: str, config: Dict[str, Any], project_path: Path):
+        """Initialize Claude Code manager with print mode support."""
+        super().__init__(cli_name, config, project_path)
+        self._session_started = False  # Track if we've started a conversation
+        self._use_print_mode = True  # Flag to use print mode instead of pexpect
 
     def get_spawn_command(self) -> list[str]:
-        """Get Claude Code spawn command."""
-        # Use --dangerously-skip-permissions to skip confirmation prompts
+        """Get Claude Code spawn command (not used in print mode)."""
         return ["claude", "--dangerously-skip-permissions"]
 
     def get_startup_timeout(self) -> int:
         """Claude Code startup timeout."""
-        return 30  # Claude Code can take a while to start
+        return 30
 
     def start(self) -> bool:
-        """Start Claude Code with special handling for bypass permissions UI."""
+        """
+        Start Claude Code manager.
+
+        In print mode, we don't actually spawn a long-running process.
+        We just mark ourselves as ready to accept commands.
+        """
         with self._lock:
             if self.state == ProcessState.RUNNING:
                 logger.warning(f"{self.cli_name} already running")
@@ -543,108 +558,57 @@ class ClaudeCodeManager(AICliManager):
 
             try:
                 self.state = ProcessState.STARTING
-                logger.info(f"Starting {self.cli_name}...")
+                logger.info(f"Starting {self.cli_name} (print mode)...")
 
-                # Spawn process with proper terminal environment
-                command = self.get_spawn_command()
-                import os
-                import time
-                env = os.environ.copy()
-                env['TERM'] = 'xterm-256color'
-
-                self.process = pexpect.spawn(
-                    command[0],
-                    command[1:],
-                    cwd=str(self.project_path),
-                    encoding="utf-8",
-                    timeout=self.timeout,
-                    env=env,
+                # Verify claude command is available
+                import subprocess
+                result = subprocess.run(
+                    ["which", "claude"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
                 )
 
-                # Wait for bypass permissions UI and send Enter to confirm
-                startup_timeout = self.get_startup_timeout()
-                index = self.process.expect([
-                    r'bypass permissions',  # Bypass permissions UI
-                    self.prompt_pattern,     # Normal prompt
-                ], timeout=startup_timeout)
+                if result.returncode != 0:
+                    raise AICliProcessError("Claude Code CLI not found in PATH")
 
-                if index == 0:  # Got bypass permissions UI
-                    logger.info("Confirming bypass permissions selection")
-                    self.process.sendline('')  # Send Enter to confirm
-                    # Claude Code doesn't show a traditional prompt after bypass
-                    # Just wait a moment for it to be ready
-                    time.sleep(2)
-
-                # Send initialization command if configured
-                if self.init_command:
-                    self.send_command(self.init_command)
-
-                # Start I/O monitoring thread
-                self._start_io_thread()
-
+                self._session_started = False
                 self.state = ProcessState.RUNNING
-                logger.info(f"{self.cli_name} started successfully")
+                logger.info(f"{self.cli_name} ready (print mode)")
                 return True
 
-            except (EOF, TIMEOUT) as e:
+            except subprocess.TimeoutExpired:
                 self.state = ProcessState.ERROR
-                error_msg = f"Failed to start {self.cli_name}: {e}"
-                logger.error(error_msg)
-                self._cleanup()
-                raise AICliProcessError(error_msg)
+                raise AICliProcessError("Timeout checking for Claude Code CLI")
 
             except Exception as e:
                 self.state = ProcessState.ERROR
-                error_msg = f"Unexpected error starting {self.cli_name}: {e}"
+                error_msg = f"Failed to start {self.cli_name}: {e}"
                 logger.error(error_msg)
-                self._cleanup()
                 raise AICliProcessError(error_msg)
-
-
-class CodexManager(AICliManager):
-    """Manager for Codex CLI."""
-
-    def get_spawn_command(self) -> list[str]:
-        """Get Codex spawn command."""
-        # Use --dangerously-bypass-approvals-and-sandbox to skip confirmation prompts and cursor checks
-        return ["codex", "--dangerously-bypass-approvals-and-sandbox"]
-
-    def get_startup_timeout(self) -> int:
-        """Codex startup timeout."""
-        return 20
-
-
-class GeminiManager(AICliManager):
-    """Manager for Gemini Code Assist CLI."""
-
-    def get_spawn_command(self) -> list[str]:
-        """Get Gemini spawn command."""
-        return ["gemini"]
-
-    def get_startup_timeout(self) -> int:
-        """Gemini startup timeout."""
-        return 30
 
     def send_command(
         self, command: str, timeout: Optional[int] = None
     ) -> Optional[str]:
         """
-        Send command to Gemini and wait for answer with ✦ marker.
+        Send command to Claude Code using print mode.
 
-        Gemini shows progress UI before the answer, so we need to wait for
-        the ✦ marker that indicates the actual answer.
+        Uses `claude -p "prompt"` for first message, then
+        `claude -p "prompt" --continue` for subsequent messages.
 
         Args:
-            command: Command to send
+            command: The prompt/question to send
             timeout: Timeout in seconds (uses default if None)
 
         Returns:
-            Command output (answer text after ✦ marker)
+            Claude's response text
 
         Raises:
             AICliTimeoutError: If command times out
-            AICliProcessError: If process is not running
+            AICliProcessError: If not running or command fails
         """
+        import subprocess
+
         if self.state != ProcessState.RUNNING:
             raise AICliProcessError(f"{self.cli_name} is not running")
 
@@ -652,37 +616,107 @@ class GeminiManager(AICliManager):
             timeout = self.timeout
 
         try:
-            with self._lock:
-                # Send command
-                self.process.sendline(command)
-                logger.debug(f"Sent to {self.cli_name}: {command}")
+            # Build command
+            cmd = [
+                "claude",
+                "-p", command,
+                "--dangerously-skip-permissions"
+            ]
 
-                # Wait for answer marker ✦ - Gemini always shows this before answers
-                # This skips all the progress UI (input box, context loading, etc.)
-                self.process.expect(r'✦', timeout=timeout)
+            # Add --continue for multi-turn conversation
+            if self._session_started:
+                cmd.append("--continue")
 
-                # Read until we see the next > prompt (answer is complete)
-                self.process.expect(r'\n>', timeout=30)
+            logger.debug(f"Running: {' '.join(cmd[:3])}...")  # Don't log full prompt
 
-                # The answer is in process.before (between ✦ and >)
-                output = self.process.before
-                if output:
-                    output = output.strip()
-                    logger.debug(f"Received from {self.cli_name}: {output[:100]}...")
+            # Run command and capture output
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(self.project_path)
+            )
 
-                return output
+            # Mark session as started for future --continue
+            self._session_started = True
 
-        except TIMEOUT:
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+                logger.error(f"Claude Code error: {error_msg}")
+                raise AICliProcessError(f"Claude Code returned error: {error_msg}")
+
+            output = result.stdout.strip()
+            logger.debug(f"Received from {self.cli_name}: {output[:100]}...")
+            return output
+
+        except subprocess.TimeoutExpired:
             raise AICliTimeoutError(
                 f"Command timed out after {timeout}s: {command[:50]}"
             )
 
-        except EOF:
-            self.state = ProcessState.ERROR
-            raise AICliProcessError(f"{self.cli_name} process terminated unexpectedly")
+        except AICliProcessError:
+            raise
+
+        except Exception as e:
+            raise AICliProcessError(f"Error running Claude Code: {e}")
+
+    def stop(self, force: bool = False) -> None:
+        """
+        Close Claude Code session.
+
+        In print mode, we just reset state (no process to kill).
+        """
+        with self._lock:
+            if self.state == ProcessState.STOPPED:
+                return
+
+            self._session_started = False
+            self.state = ProcessState.STOPPED
+            logger.debug(f"{self.cli_name} session closed")
+
+    def is_alive(self) -> bool:
+        """
+        Check if manager is ready.
+
+        In print mode, we're always "alive" if state is RUNNING.
+        """
+        return self.state == ProcessState.RUNNING
+
+    def reset_session(self) -> None:
+        """Reset the conversation session (start fresh without --continue)."""
+        self._session_started = False
+        logger.info(f"{self.cli_name} session reset")
+
+
+class CodexManager(AICliManager):
+    """
+    Manager for Codex CLI using exec mode.
+
+    Uses `codex exec "prompt"` for non-interactive execution.
+    This is much more reliable than trying to automate the interactive TUI.
+    """
+
+    def __init__(self, cli_name: str, config: Dict[str, Any], project_path: Path):
+        """Initialize Codex manager with exec mode support."""
+        super().__init__(cli_name, config, project_path)
+        self._use_exec_mode = True
+
+    def get_spawn_command(self) -> list[str]:
+        """Get Codex spawn command (not used in exec mode)."""
+        return ["codex", "--dangerously-bypass-approvals-and-sandbox"]
+
+    def get_startup_timeout(self) -> int:
+        """Codex startup timeout."""
+        return 20
 
     def start(self) -> bool:
-        """Start Gemini with special handling for sandbox selection UI."""
+        """
+        Start Codex manager.
+
+        In exec mode, we don't spawn a long-running process.
+        We just verify the command exists and mark as ready.
+        """
         with self._lock:
             if self.state == ProcessState.RUNNING:
                 logger.warning(f"{self.cli_name} already running")
@@ -690,58 +724,275 @@ class GeminiManager(AICliManager):
 
             try:
                 self.state = ProcessState.STARTING
-                logger.info(f"Starting {self.cli_name}...")
+                logger.info(f"Starting {self.cli_name} (exec mode)...")
 
-                # Spawn process with proper terminal environment
-                command = self.get_spawn_command()
-                import os
-                import time
-                env = os.environ.copy()
-                env['TERM'] = 'xterm-256color'
-
-                self.process = pexpect.spawn(
-                    command[0],
-                    command[1:],
-                    cwd=str(self.project_path),
-                    encoding="utf-8",
-                    timeout=self.timeout,
-                    env=env,
+                # Verify codex command is available
+                import subprocess
+                result = subprocess.run(
+                    ["which", "codex"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
                 )
 
-                # Wait for sandbox selection UI and send Enter to confirm 'auto'
-                startup_timeout = self.get_startup_timeout()
-                index = self.process.expect([
-                    r'no sandbox.*auto',  # Sandbox selection UI
-                    self.prompt_pattern,  # Normal prompt
-                ], timeout=startup_timeout)
-
-                if index == 0:  # Got sandbox selection UI
-                    logger.info("Auto-selecting default sandbox option")
-                    self.process.sendline('')  # Send Enter to confirm default (auto)
-                    # Wait a moment for Gemini to initialize
-                    time.sleep(2)
-
-                # Send initialization command if configured
-                if self.init_command:
-                    self.send_command(self.init_command)
-
-                # Start I/O monitoring thread
-                self._start_io_thread()
+                if result.returncode != 0:
+                    raise AICliProcessError("Codex CLI not found in PATH")
 
                 self.state = ProcessState.RUNNING
-                logger.info(f"{self.cli_name} started successfully")
+                logger.info(f"{self.cli_name} ready (exec mode)")
                 return True
 
-            except (EOF, TIMEOUT) as e:
+            except subprocess.TimeoutExpired:
                 self.state = ProcessState.ERROR
-                error_msg = f"Failed to start {self.cli_name}: {e}"
-                logger.error(error_msg)
-                self._cleanup()
-                raise AICliProcessError(error_msg)
+                raise AICliProcessError("Timeout checking for Codex CLI")
 
             except Exception as e:
                 self.state = ProcessState.ERROR
-                error_msg = f"Unexpected error starting {self.cli_name}: {e}"
+                error_msg = f"Failed to start {self.cli_name}: {e}"
                 logger.error(error_msg)
-                self._cleanup()
                 raise AICliProcessError(error_msg)
+
+    def send_command(
+        self, command: str, timeout: Optional[int] = None
+    ) -> Optional[str]:
+        """
+        Send command to Codex using exec mode.
+
+        Uses `codex exec "prompt"` for non-interactive execution.
+        Output goes to stdout, activity/progress goes to stderr.
+
+        Args:
+            command: The prompt/question to send
+            timeout: Timeout in seconds (uses default if None)
+
+        Returns:
+            Codex's response text (stdout)
+
+        Raises:
+            AICliTimeoutError: If command times out
+            AICliProcessError: If not running or command fails
+        """
+        import subprocess
+
+        if self.state != ProcessState.RUNNING:
+            raise AICliProcessError(f"{self.cli_name} is not running")
+
+        if timeout is None:
+            timeout = self.timeout
+
+        try:
+            # Build command using exec mode
+            cmd = [
+                "codex", "exec",
+                command,
+                "--dangerously-bypass-approvals-and-sandbox"
+            ]
+
+            logger.debug(f"Running: codex exec ...")
+
+            # Run command and capture output
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(self.project_path)
+            )
+
+            # Codex exec: stdout = final response, stderr = activity
+            output = result.stdout.strip()
+
+            if result.returncode != 0 and not output:
+                error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+                logger.error(f"Codex error: {error_msg}")
+                raise AICliProcessError(f"Codex returned error: {error_msg}")
+
+            logger.debug(f"Received from {self.cli_name}: {output[:100]}...")
+            return output
+
+        except subprocess.TimeoutExpired:
+            raise AICliTimeoutError(
+                f"Command timed out after {timeout}s: {command[:50]}"
+            )
+
+        except AICliProcessError:
+            raise
+
+        except Exception as e:
+            raise AICliProcessError(f"Error running Codex: {e}")
+
+    def stop(self, force: bool = False) -> None:
+        """
+        Close Codex session.
+
+        In exec mode, we just reset state (no process to kill).
+        """
+        with self._lock:
+            if self.state == ProcessState.STOPPED:
+                return
+
+            self.state = ProcessState.STOPPED
+            logger.debug(f"{self.cli_name} session closed")
+
+    def is_alive(self) -> bool:
+        """
+        Check if manager is ready.
+
+        In exec mode, we're always "alive" if state is RUNNING.
+        """
+        return self.state == ProcessState.RUNNING
+
+
+class GeminiManager(AICliManager):
+    """
+    Manager for Gemini CLI using non-interactive mode.
+
+    Uses `gemini "prompt"` with `--yolo` for non-interactive execution.
+    This is much more reliable than trying to automate the interactive TUI.
+    """
+
+    def __init__(self, cli_name: str, config: Dict[str, Any], project_path: Path):
+        """Initialize Gemini manager with non-interactive mode support."""
+        super().__init__(cli_name, config, project_path)
+        self._use_noninteractive = True
+        self._model = config.get("model", "gemini-2.5-pro")
+
+    def get_spawn_command(self) -> list[str]:
+        """Get Gemini spawn command (not used in non-interactive mode)."""
+        return ["gemini"]
+
+    def get_startup_timeout(self) -> int:
+        """Gemini startup timeout."""
+        return 30
+
+    def start(self) -> bool:
+        """
+        Start Gemini manager.
+
+        In non-interactive mode, we don't spawn a long-running process.
+        We just verify the command exists and mark as ready.
+        """
+        with self._lock:
+            if self.state == ProcessState.RUNNING:
+                logger.warning(f"{self.cli_name} already running")
+                return True
+
+            try:
+                self.state = ProcessState.STARTING
+                logger.info(f"Starting {self.cli_name} (non-interactive mode)...")
+
+                # Verify gemini command is available
+                import subprocess
+                result = subprocess.run(
+                    ["which", "gemini"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+
+                if result.returncode != 0:
+                    raise AICliProcessError("Gemini CLI not found in PATH")
+
+                self.state = ProcessState.RUNNING
+                logger.info(f"{self.cli_name} ready (non-interactive mode, model: {self._model})")
+                return True
+
+            except subprocess.TimeoutExpired:
+                self.state = ProcessState.ERROR
+                raise AICliProcessError("Timeout checking for Gemini CLI")
+
+            except Exception as e:
+                self.state = ProcessState.ERROR
+                error_msg = f"Failed to start {self.cli_name}: {e}"
+                logger.error(error_msg)
+                raise AICliProcessError(error_msg)
+
+    def send_command(
+        self, command: str, timeout: Optional[int] = None
+    ) -> Optional[str]:
+        """
+        Send command to Gemini using non-interactive mode.
+
+        Uses `gemini "prompt" --yolo` for non-interactive execution.
+
+        Args:
+            command: The prompt/question to send
+            timeout: Timeout in seconds (uses default if None)
+
+        Returns:
+            Gemini's response text
+
+        Raises:
+            AICliTimeoutError: If command times out
+            AICliProcessError: If not running or command fails
+        """
+        import subprocess
+
+        if self.state != ProcessState.RUNNING:
+            raise AICliProcessError(f"{self.cli_name} is not running")
+
+        if timeout is None:
+            timeout = self.timeout
+
+        try:
+            # Build command using non-interactive mode
+            # gemini "prompt" -m model --yolo auto-approves actions
+            cmd = [
+                "gemini",
+                command,
+                "-m", self._model,  # Use configured model
+                "--yolo"  # Auto-approve all actions
+            ]
+
+            logger.debug(f"Running: gemini ... -m {self._model} --yolo")
+
+            # Run command and capture output
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(self.project_path)
+            )
+
+            output = result.stdout.strip()
+
+            if result.returncode != 0 and not output:
+                error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+                logger.error(f"Gemini error: {error_msg}")
+                raise AICliProcessError(f"Gemini returned error: {error_msg}")
+
+            logger.debug(f"Received from {self.cli_name}: {output[:100]}...")
+            return output
+
+        except subprocess.TimeoutExpired:
+            raise AICliTimeoutError(
+                f"Command timed out after {timeout}s: {command[:50]}"
+            )
+
+        except AICliProcessError:
+            raise
+
+        except Exception as e:
+            raise AICliProcessError(f"Error running Gemini: {e}")
+
+    def stop(self, force: bool = False) -> None:
+        """
+        Close Gemini session.
+
+        In non-interactive mode, we just reset state (no process to kill).
+        """
+        with self._lock:
+            if self.state == ProcessState.STOPPED:
+                return
+
+            self.state = ProcessState.STOPPED
+            logger.debug(f"{self.cli_name} session closed")
+
+    def is_alive(self) -> bool:
+        """
+        Check if manager is ready.
+
+        In non-interactive mode, we're always "alive" if state is RUNNING.
+        """
+        return self.state == ProcessState.RUNNING
