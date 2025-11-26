@@ -147,12 +147,11 @@ class MonoRepoOrchestrator:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"session_{timestamp}"
 
-    def start_all_clis(self, reinit: bool = False) -> Dict[str, bool]:
+    def start_all_clis(self) -> Dict[str, bool]:
         """
         Start all configured AI CLI processes.
 
-        Args:
-            reinit: Force regeneration of config files
+        Verifies each CLI is available in non-interactive mode.
 
         Returns:
             Dictionary mapping CLI names to success status
@@ -167,15 +166,10 @@ class MonoRepoOrchestrator:
 
             try:
                 self.state = OrchestratorState.STARTING
-                logger.info(f"Initializing AI Roundtable for {self.project_path}")
+                logger.debug(f"Initializing AI Roundtable for {self.project_path}")
 
-                # Generate context files if needed
-                if reinit or not self._context_files_exist():
-                    logger.info("Generating context files...")
-                    self._generate_context_files()
-
-                # Analyze project structure
-                logger.info("Analyzing project structure...")
+                # Analyze project structure (for internal use, not for generating files)
+                logger.debug("Analyzing project structure...")
                 self.context_builder.analyze_project()
 
                 # Initialize each CLI manager (verifies CLI availability)
@@ -195,7 +189,7 @@ class MonoRepoOrchestrator:
                             continue
 
                         # Create and verify manager (non-interactive mode)
-                        logger.info(f"Checking {cli_name}...")
+                        logger.debug(f"Checking {cli_name}...")
                         manager = manager_class(
                             cli_name=cli_name,
                             config=cli_config,
@@ -208,7 +202,7 @@ class MonoRepoOrchestrator:
                         if success:
                             self.ai_managers[cli_name] = manager
                             successful.append(cli_name)
-                            logger.info(f"✓ {cli_name} available")
+                            logger.debug(f"✓ {cli_name} available")
                         else:
                             failed[cli_name] = "Not available"
                             logger.error(f"✗ {cli_name} not available")
@@ -257,39 +251,6 @@ class MonoRepoOrchestrator:
                 logger.error(f"Failed to start orchestrator: {e}")
                 raise OrchestratorError(f"Orchestrator startup failed: {e}")
 
-    def _context_files_exist(self) -> bool:
-        """Check if context files already exist."""
-        context_files = [
-            self.project_path / "CLAUDE.md",
-            self.project_path / "CODEX.md",
-            self.project_path / "GEMINI.md",
-        ]
-        return all(f.exists() for f in context_files)
-
-    def _generate_context_files(self) -> None:
-        """Generate CLAUDE.md, CODEX.md, GEMINI.md for each AI CLI."""
-        # Ensure project structure is analyzed
-        if not self.context_builder.structure:
-            self.context_builder.analyze_project()
-
-        # Generate CLAUDE.md
-        claude_md = self.context_builder.generate_claude_md()
-        claude_path = self.project_path / "CLAUDE.md"
-        claude_path.write_text(claude_md)
-        logger.info(f"Generated {claude_path}")
-
-        # Generate CODEX.md
-        codex_md = self.context_builder.generate_codex_md()
-        codex_path = self.project_path / "CODEX.md"
-        codex_path.write_text(codex_md)
-        logger.info(f"Generated {codex_path}")
-
-        # Generate GEMINI.md
-        gemini_md = self.context_builder.generate_gemini_md()
-        gemini_path = self.project_path / "GEMINI.md"
-        gemini_path.write_text(gemini_md)
-        logger.info(f"Generated {gemini_path}")
-
     def sequential_discussion(
         self, question: str, cli_order: Optional[List[str]] = None
     ) -> List[DiscussionResponse]:
@@ -318,7 +279,7 @@ class MonoRepoOrchestrator:
         # Filter to only active CLIs
         cli_order = [cli for cli in cli_order if cli in self.ai_managers]
 
-        logger.info(f"Starting sequential discussion with order: {cli_order}")
+        logger.debug(f"Starting sequential discussion with order: {cli_order}")
         responses = []
         context = question
 
@@ -337,7 +298,7 @@ class MonoRepoOrchestrator:
                 continue
 
             try:
-                logger.info(f"Sending to {cli_name}...")
+                logger.debug(f"Sending to {cli_name}...")
                 response = manager.send_command(context)  # Uses configured timeout
 
                 discussion_response = DiscussionResponse(
@@ -348,7 +309,7 @@ class MonoRepoOrchestrator:
                 # Add response to context for next CLI
                 context = f"{context}\n\n{cli_name} response:\n{response}"
 
-                logger.info(f"✓ Received response from {cli_name}")
+                logger.debug(f"✓ Received response from {cli_name}")
 
             except (AICliTimeoutError, AICliProcessError) as e:
                 logger.error(f"Error from {cli_name}: {e}")
@@ -387,7 +348,7 @@ class MonoRepoOrchestrator:
         if self.state != OrchestratorState.RUNNING:
             raise OrchestratorError("Orchestrator not running")
 
-        logger.info(f"Starting parallel discussion with {len(self.ai_managers)} CLIs")
+        logger.debug(f"Starting parallel discussion with {len(self.ai_managers)} CLIs")
         responses = []
 
         def query_cli(cli_name: str, manager: AICliManager) -> DiscussionResponse:
@@ -401,9 +362,9 @@ class MonoRepoOrchestrator:
                 )
 
             try:
-                logger.info(f"Sending to {cli_name}...")
+                logger.debug(f"Sending to {cli_name}...")
                 response = manager.send_command(question, timeout=timeout)
-                logger.info(f"✓ Received response from {cli_name}")
+                logger.debug(f"✓ Received response from {cli_name}")
 
                 return DiscussionResponse(
                     cli_name=cli_name, response=response, timestamp=datetime.now()
@@ -481,7 +442,7 @@ class MonoRepoOrchestrator:
         if reviewer not in self.ai_managers:
             raise OrchestratorError(f"Reviewer CLI '{reviewer}' not available")
 
-        logger.info(f"Starting review mode: {proposer} → {reviewer} ({iterations} iterations)")
+        logger.debug(f"Starting review mode: {proposer} → {reviewer} ({iterations} iterations)")
 
         proposals = []
         reviews = []
@@ -489,12 +450,12 @@ class MonoRepoOrchestrator:
         current_task = task
 
         for i in range(iterations):
-            logger.info(f"Review iteration {i + 1}/{iterations}")
+            logger.debug(f"Review iteration {i + 1}/{iterations}")
 
             # Get proposal
             try:
                 proposer_mgr = self.ai_managers[proposer]
-                logger.info(f"Getting proposal from {proposer}...")
+                logger.debug(f"Getting proposal from {proposer}...")
                 proposal_response = proposer_mgr.send_command(current_task, timeout=300)
 
                 proposal = DiscussionResponse(
@@ -504,7 +465,7 @@ class MonoRepoOrchestrator:
                     metadata={"iteration": i + 1, "role": "proposer"},
                 )
                 proposals.append(proposal)
-                logger.info(f"✓ Received proposal from {proposer}")
+                logger.debug(f"✓ Received proposal from {proposer}")
 
             except (AICliTimeoutError, AICliProcessError) as e:
                 logger.error(f"Error getting proposal from {proposer}: {e}")
@@ -523,7 +484,7 @@ class MonoRepoOrchestrator:
             try:
                 reviewer_mgr = self.ai_managers[reviewer]
                 review_prompt = f"Review this proposal:\n\n{proposal_response}"
-                logger.info(f"Getting review from {reviewer}...")
+                logger.debug(f"Getting review from {reviewer}...")
                 review_response = reviewer_mgr.send_command(review_prompt, timeout=300)
 
                 review = DiscussionResponse(
@@ -533,7 +494,7 @@ class MonoRepoOrchestrator:
                     metadata={"iteration": i + 1, "role": "reviewer"},
                 )
                 reviews.append(review)
-                logger.info(f"✓ Received review from {reviewer}")
+                logger.debug(f"✓ Received review from {reviewer}")
 
                 # Update task for next iteration
                 if i < iterations - 1:

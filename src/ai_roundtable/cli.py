@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.markdown import Markdown
+from rich.status import Status
 
 from .config import ConfigManager
 from .logging_config import LoggingConfig, get_logger
@@ -77,9 +78,8 @@ def main(log_level: str):
     default=".",
     help="Project directory path",
 )
-@click.option("--reinit", is_flag=True, help="Force re-initialization of the session")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
-def start(project: Path, reinit: bool, verbose: bool):
+def start(project: Path, verbose: bool):
     """Start AI Roundtable interactive session."""
     # Configure logging level
     if verbose:
@@ -88,11 +88,7 @@ def start(project: Path, reinit: bool, verbose: bool):
 
     console.print("[bold green]🎭 AI Roundtable Interactive Mode[/]")
     console.print(f"[dim]Project: {project.absolute()}[/]")
-    logger.info(f"Starting interactive session for project: {project.absolute()}")
-
-    if reinit:
-        console.print("[yellow]⚠️  Re-initialization requested[/]")
-        logger.warning("Re-initialization requested")
+    logger.debug(f"Starting interactive session for project: {project.absolute()}")
 
     orchestrator = None
 
@@ -115,10 +111,10 @@ def start(project: Path, reinit: bool, verbose: bool):
 
         # Verify CLI availability (non-interactive mode - no long-running processes)
         console.print("\n[cyan]Checking AI CLI availability...[/]")
-        logger.info("Verifying AI CLI availability")
+        logger.debug("Verifying AI CLI availability")
 
         try:
-            results = orchestrator.start_all_clis(reinit=reinit)
+            results = orchestrator.start_all_clis()
 
             # Display availability results
             success_count = sum(1 for v in results.values() if v)
@@ -275,8 +271,45 @@ def _execute_command(orchestrator: MonoRepoOrchestrator, user_input: str, conver
         # Add user question to history
         conversation_history.append({"role": "user", "content": question})
 
-        console.print(f"[dim]Starting sequential discussion...[/]\n")
-        responses = orchestrator.sequential_discussion(question)
+        # Run sequential discussion with animated spinner
+        active_clis = orchestrator.get_active_clis()
+        console.print(f"[dim]Starting sequential discussion with {', '.join(active_clis)}...[/]\n")
+
+        with Status("[cyan]Starting discussion...[/]", console=console, spinner="dots") as status:
+            import threading
+            import time
+
+            # Track current CLI being processed
+            current_cli = {"name": "claude_code", "idx": 0}
+            stop_animation = threading.Event()
+
+            cli_colors = {"claude_code": "cyan", "codex": "green", "gemini": "magenta"}
+            cli_messages = {
+                "claude_code": ["Claude is thinking...", "Claude is exploring...", "Claude is analyzing..."],
+                "codex": ["Codex is thinking...", "Codex is reasoning...", "Codex is processing..."],
+                "gemini": ["Gemini is thinking...", "Gemini is contemplating...", "Gemini is working..."],
+            }
+
+            def animate_status():
+                msg_idx = 0
+                while not stop_animation.is_set():
+                    cli = current_cli["name"]
+                    color = cli_colors.get(cli, "white")
+                    messages = cli_messages.get(cli, ["Thinking..."])
+                    msg = messages[msg_idx % len(messages)]
+                    status.update(f"[{color}]{msg}[/]")
+                    msg_idx += 1
+                    time.sleep(1.5)
+
+            animation_thread = threading.Thread(target=animate_status, daemon=True)
+            animation_thread.start()
+
+            try:
+                responses = orchestrator.sequential_discussion(question)
+            finally:
+                stop_animation.set()
+                animation_thread.join(timeout=0.5)
+
         _display_responses(responses)
 
         # Add all AI responses to history
@@ -456,8 +489,39 @@ def _send_direct_message(
         # Add user message to history
         conversation_history.append({"role": "user", "content": message})
 
-        console.print(f"[dim]Sending to {cli_name}...[/]\n")
-        response = manager.send_command(full_message)  # Uses configured timeout
+        # Animated spinner while waiting for response
+        spinner_messages = {
+            "claude_code": ["[cyan]Claude is thinking...[/]", "[cyan]Claude is exploring...[/]", "[cyan]Claude is analyzing...[/]"],
+            "codex": ["[green]Codex is thinking...[/]", "[green]Codex is reasoning...[/]", "[green]Codex is processing...[/]"],
+            "gemini": ["[magenta]Gemini is thinking...[/]", "[magenta]Gemini is contemplating...[/]", "[magenta]Gemini is working...[/]"],
+        }
+        spinner_text = spinner_messages.get(cli_name, ["Thinking..."])[0]
+
+        with Status(spinner_text, console=console, spinner="dots") as status:
+            import random
+            import threading
+            import time
+
+            # Update spinner message periodically
+            stop_animation = threading.Event()
+
+            def animate_status():
+                messages = spinner_messages.get(cli_name, ["Thinking..."])
+                idx = 0
+                while not stop_animation.is_set():
+                    time.sleep(2)
+                    if not stop_animation.is_set():
+                        idx = (idx + 1) % len(messages)
+                        status.update(messages[idx])
+
+            animation_thread = threading.Thread(target=animate_status, daemon=True)
+            animation_thread.start()
+
+            try:
+                response = manager.send_command(full_message)  # Uses configured timeout
+            finally:
+                stop_animation.set()
+                animation_thread.join(timeout=0.5)
 
         # Add AI response to history
         if response:
