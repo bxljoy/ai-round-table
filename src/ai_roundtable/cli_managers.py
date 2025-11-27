@@ -635,7 +635,8 @@ class ClaudeCodeManager(AICliManager):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=str(self.project_path)
+                cwd=str(self.project_path),
+                stdin=subprocess.DEVNULL  # Prevent hanging on stdin
             )
 
             # Mark session as started for future --continue
@@ -796,7 +797,8 @@ class CodexManager(AICliManager):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=str(self.project_path)
+                cwd=str(self.project_path),
+                stdin=subprocess.DEVNULL  # Prevent hanging on stdin
             )
 
             # Codex exec: stdout = final response, stderr = activity
@@ -952,7 +954,8 @@ class GeminiManager(AICliManager):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=str(self.project_path)
+                cwd=str(self.project_path),
+                stdin=subprocess.DEVNULL  # Prevent hanging on stdin
             )
 
             output = result.stdout.strip()
